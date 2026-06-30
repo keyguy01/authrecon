@@ -89,4 +89,3 @@ stages:
               PathtoPublish: "$(System.DefaultWorkingDirectory)"
               ArtifactName: "authrecon-logs"
               publishLocation: Container
-``
