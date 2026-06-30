@@ -19,12 +19,14 @@ def generate_excel_report(results, output_dir="output"):
     for r in results:
         rows.append({
             "URL": r.get("url"),
-            "Status": r.get("status_code"),
-            "Auth Provider": r.get("provider"),
-            "Protocol": r.get("protocol"),
-            "Confidence": r.get("confidence"),
-            "Redirects": " | ".join(r.get("redirect_chain", [])),
-            "Title": r.get("title", ""),
+            "Auth Provider": r.get("auth_provider"),
+            "Auth Protocol": r.get("auth_protocol"),
+            "Auth Confidence": r.get("auth_confidence"),
+
+            "WAF": r.get("waf"),
+            "WAF Confidence": r.get("waf_confidence"),
+
+            "API Auth": r.get("api_auth"),
         })
 
     df = pd.DataFrame(rows)
