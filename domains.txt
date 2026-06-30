@@ -1,7 +1,3 @@
-# AuthRecon Target List
-# One URL per line
-# Comments start with #
-
 https://deliveryevaluation.seaboardfoods.com
 https://customercare.seaboardfoods.com
 https://farmapi.seaboardfoods.com
