@@ -42,7 +42,7 @@ stages:
             displayName: "Cache pip dependencies"
             inputs:
               key: 'pip | "$(Agent.OS)" | requirements.txt'
-              path: ~/.cache/pip
+              path: /home/vsts/.cache/pip
 
           # ----------------------------
           # 3. Install dependencies
