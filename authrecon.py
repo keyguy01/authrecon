@@ -1,10 +1,25 @@
 import httpx
 import yaml
 import pandas as pd
-from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 import os
 from datetime import datetime
+
+# -----------------------------
+# Scanners
+# -----------------------------
+from scanners.httpx_scanner import run_httpx_scan
+from scanners.html_parser import parse_html_for_auth
+from scanners.javascript_parser import parse_js_for_auth
+from scanners.redirect_parser import parse_redirect_auth
+
+# -----------------------------
+# Auth Engine
+# -----------------------------
+from fingerprints.auth_engine import (
+    score_findings,
+    classify_login_type
+)
 
 # -----------------------------
 # Load Config
@@ -21,108 +36,118 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 with open("domains.txt", "r") as f:
     DOMAINS = [line.strip() for line in f if line.strip()]
 
+
 # -----------------------------
-# Simple Detection Logic
+# WAF Detection
 # -----------------------------
-def detect_auth(headers, text, url):
-    findings = []
+def detect_waf(headers, body):
+    headers_l = {k.lower(): str(v).lower() for k, v in headers.items()}
+    body_l = body.lower()
 
-    headers_lower = {k.lower(): v.lower() for k, v in headers.items()}
-    text_lower = text.lower()
+    waf = None
+    confidence = 0
+    evidence = []
 
-    # ---------------- Auth Providers ----------------
-    if "login.microsoftonline.com" in text_lower or "x-ms-request-id" in headers_lower:
-        findings.append(("Microsoft Entra ID", "OIDC"))
+    # Imperva
+    if "visid_incap" in str(headers_l):
+        waf = "Imperva"
+        confidence += 60
+        evidence.append("cookie:visid_incap")
 
-    if "okta" in text_lower:
-        findings.append(("Okta", "OIDC/SAML"))
+    if "incapsula" in body_l:
+        waf = "Imperva"
+        confidence += 50
+        evidence.append("body:incapsula")
 
-    if "auth0" in text_lower:
-        findings.append(("Auth0", "OIDC/OAuth2"))
+    if "x-iinfo" in headers_l:
+        waf = "Imperva"
+        confidence += 40
+        evidence.append("header:x-iinfo")
 
-    if "keycloak" in text_lower:
-        findings.append(("Keycloak", "OIDC/SAML"))
+    # Azure WAF / Front Door
+    if "frontdoor" in body_l or "x-azure" in str(headers_l):
+        waf = "Azure WAF / Front Door"
+        confidence += 40
+        evidence.append("azure_signal")
 
-    # ---------------- Protocols ----------------
-    if "saml" in text_lower:
-        findings.append(("Unknown", "SAML"))
+    if confidence < 50:
+        return None, 0, []
 
-    if "oauth" in text_lower:
-        findings.append(("Unknown", "OAuth2/OIDC"))
-
-    if "bearer" in text_lower:
-        findings.append(("Unknown", "Bearer Token"))
-
-    if "basic realm" in text_lower:
-        findings.append(("Unknown", "Basic Auth"))
-
-    # ---------------- API / APIM ----------------
-    if "ocp-apim-subscription-key" in headers_lower:
-        findings.append(("Azure API Management", "API Key"))
-
-    if "apim" in text_lower:
-        findings.append(("Azure API Management", "Gateway"))
-
-    # ---------------- WAF Detection ----------------
-    if "incapsula" in text_lower or "x-iinfo" in headers_lower:
-        findings.append(("Imperva WAF", "WAF"))
-
-    if "azure" in text_lower or "x-azure" in headers_lower:
-        findings.append(("Azure WAF/Front Door", "WAF"))
-
-    return findings or [("Unknown", "Unknown")]
+    return waf, min(confidence, 100), evidence
 
 
 # -----------------------------
 # Scan Function
 # -----------------------------
 def scan_domain(url):
-    result = {
-        "url": url,
-        "status": None,
-        "provider": "Unknown",
-        "protocol": "Unknown",
-        "headers": "",
-        "title": "",
-        "redirect": "",
-        "api_gateway": "",
-        "waf": "",
-    }
 
     try:
-        with httpx.Client(follow_redirects=True, verify=False, timeout=10) as client:
-            r = client.get(url)
+        # 1. HTTP capture
+        http_data = run_httpx_scan(url)
 
-            result["status"] = r.status_code
-            result["headers"] = str(dict(r.headers))
-            result["redirect"] = str(r.history)
+        headers = http_data.get("headers", {})
+        body = http_data.get("body", "")
+        redirect_chain = " ".join(http_data.get("redirect_chain", []))
 
-            soup = BeautifulSoup(r.text, "html.parser")
-            title = soup.title.string if soup.title else ""
-            result["title"] = title
+        # 2. Parsers
+        html = parse_html_for_auth(http_data)
+        js = parse_js_for_auth(http_data)
 
-            findings = detect_auth(dict(r.headers), r.text, url)
+        # 3. Redirect analysis
+        redirect_signals = parse_redirect_auth(http_data)
 
-            # Pick best match
-            provider = findings[0][0]
-            protocol = findings[0][1]
+        # 4. Auth scoring engine
+        auth_result = score_findings(http_data, html, js)
 
-            result["provider"] = provider
-            result["protocol"] = protocol
+        # 5. Login type classification
+        login_result = classify_login_type(body, headers, redirect_chain)
 
-            # APIM/WAF tagging
-            if "Azure API Management" in provider:
-                result["api_gateway"] = "Yes"
+        # 6. WAF detection
+        waf, waf_conf, waf_evidence = detect_waf(headers, body)
 
-            if "Imperva" in provider or "WAF" in provider:
-                result["waf"] = "Yes"
+        # 7. Redirect override (only if stronger signal)
+        if redirect_signals:
+            best_redirect = max(redirect_signals, key=lambda x: x["confidence"])
+
+            if best_redirect["confidence"] > auth_result["confidence"]:
+                auth_result["provider"] = best_redirect["provider"]
+                auth_result["protocol"] = best_redirect["protocol"]
+                auth_result["confidence"] = best_redirect["confidence"]
+
+        # 8. FINAL RESULT BUILD
+        return {
+            "url": url,
+
+            # AUTH
+            "auth_provider": auth_result["provider"],
+            "auth_protocol": auth_result["protocol"],
+            "auth_confidence": auth_result["confidence"],
+
+            # LOGIN TYPE
+            "login_type": login_result["login_type"],
+            "login_confidence": login_result["confidence"],
+            "login_evidence": login_result["evidence"],
+
+            # WAF
+            "waf": waf,
+            "waf_confidence": waf_conf,
+
+            # FULL EVIDENCE
+            "evidence": {
+                "auth": auth_result.get("scores"),
+                "waf": waf_evidence
+            }
+        }
 
     except Exception as e:
-        result["status"] = "ERROR"
-        result["provider"] = "ERROR"
-        result["protocol"] = str(e)
-
-    return result
+        return {
+            "url": url,
+            "auth_provider": "ERROR",
+            "auth_protocol": str(e),
+            "auth_confidence": 0,
+            "login_type": "ERROR",
+            "login_confidence": 0
+        }
 
 
 # -----------------------------
@@ -136,7 +161,13 @@ def run_scan():
     with ThreadPoolExecutor(max_workers=config["scan"]["threads"]) as executor:
         for res in executor.map(scan_domain, DOMAINS):
             results.append(res)
-            print(f"[+] {res['url']} -> {res['provider']} ({res['protocol']})")
+
+            print(
+                f"[+] {res.get('url')} -> "
+                f"{res.get('auth_provider')} "
+                f"({res.get('auth_protocol')}) | "
+                f"{res.get('login_type')}"
+            )
 
     return results
 
@@ -149,18 +180,22 @@ def generate_reports(results):
 
     df = pd.DataFrame(results)
 
-    excel_path = os.path.join(OUTPUT_DIR, f"AuthRecon_Report_{timestamp}.xlsx")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    excel_path = os.path.join(
+        OUTPUT_DIR,
+        f"AuthRecon_Report_{timestamp}.xlsx"
+    )
+
+    html_path = os.path.join(
+        OUTPUT_DIR,
+        f"AuthRecon_Report_{timestamp}.html"
+    )
 
     df.to_excel(excel_path, index=False)
+    df.to_html(html_path, index=False)
 
-    html_path = os.path.join(OUTPUT_DIR, f"AuthRecon_Report_{timestamp}.html")
-
-    html = df.to_html(index=False)
-
-    with open(html_path, "w") as f:
-        f.write(html)
-
-    print(f"\n[+] Reports generated:")
+    print("\n[+] Reports generated:")
     print(f"    {excel_path}")
     print(f"    {html_path}")
 

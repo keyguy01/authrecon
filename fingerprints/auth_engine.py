@@ -1,118 +1,211 @@
 def score_findings(http_data, html_findings, js_findings):
     """
-    Simple scoring engine for authentication classification.
+    Phase 1 Authentication Scoring Engine
+
+    Responsibilities:
+    - Identify auth provider (Entra, Okta, Auth0, Keycloak)
+    - Infer protocol (OIDC, OAuth2, SAML)
+    - Collect evidence from HTTP/HTML/JS
+    - Delegate login type classification
     """
 
     scores = {}
+    evidence = {"http": [], "html": [], "js": []}
 
     def add(provider, points):
         scores[provider] = scores.get(provider, 0) + points
 
-    # -------------------------
-    # HTTP / Header Signals
-    # -------------------------
     headers = http_data.get("headers", {})
     body = http_data.get("body", "").lower()
     redirect_chain = " ".join(http_data.get("redirect_chain", [])).lower()
 
-    # Entra ID
-    if "login.microsoftonline.com" in body or "msal" in body:
+    # -------------------------
+    # Endpoint-based signals
+    # -------------------------
+    if "/oauth" in body or "/authorize" in body:
+        add("OAuth2/OIDC Flow Detected", 40)
+
+    if "/saml" in body:
+        add("SAML Flow Detected", 40)
+
+    if "/login" in body or "/signin" in body:
+        add("Generic Login Portal", 20)
+
+    # -------------------------
+    # HTTP signals
+    # -------------------------
+    if "login.microsoftonline.com" in body:
         add("Microsoft Entra ID", 50)
+        evidence["http"].append("ms login in body")
+
+    if "login.microsoftonline.com" in redirect_chain:
+        add("Microsoft Entra ID", 40)
+        evidence["http"].append("redirect: Entra")
 
     if "x-ms-request-id" in str(headers).lower():
         add("Microsoft Entra ID", 20)
 
-    if "login.microsoftonline.com" in redirect_chain:
-        add("Microsoft Entra ID", 40)
-
-    # Okta
-    if "okta" in body:
-        add("Okta", 50)
-
-    # Auth0
-    if "auth0" in body:
-        add("Auth0", 50)
-
-    # Keycloak
-    if "keycloak" in body:
-        add("Keycloak", 50)
-
     # -------------------------
-    # Protocol Signals (HTML)
+    # HTML signals
     # -------------------------
     if html_findings.get("saml_hint"):
         add("SAML", 40)
+        evidence["html"].append("saml_hint")
 
     if html_findings.get("oidc_hint"):
         add("OIDC", 40)
+        evidence["html"].append("oidc_hint")
 
     if html_findings.get("oauth_hint"):
         add("OAuth2", 30)
-
-    if html_findings.get("login_form"):
-        add("Forms-Based Login", 20)
+        evidence["html"].append("oauth_hint")
 
     # -------------------------
-    # JS Signals
+    # JS signals
     # -------------------------
     if js_findings.get("msal"):
         add("Microsoft Entra ID", 40)
+        evidence["js"].append("msal.js detected")
 
     if js_findings.get("okta"):
         add("Okta", 40)
+        evidence["js"].append("okta sdk detected")
 
     if js_findings.get("auth0"):
         add("Auth0", 40)
+        evidence["js"].append("auth0 sdk detected")
 
     if js_findings.get("keycloak"):
         add("Keycloak", 40)
-
-    if js_findings.get("oauth"):
-        add("OAuth2", 20)
-
-    if js_findings.get("oidc"):
-        add("OIDC", 20)
+        evidence["js"].append("keycloak sdk detected")
 
     # -------------------------
-    # API / Token Signals
-    # -------------------------
-    if "bearer" in body:
-        add("Bearer Token API", 30)
-
-    if "ocp-apim-subscription-key" in str(headers).lower():
-        add("Azure API Management", 60)
-
-    if "incapsula" in body:
-        add("Imperva WAF", 50)
-
-    # -------------------------
-    # Final Decision
+    # Final decision
     # -------------------------
     if not scores:
         return {
-            "provider": "Unknown",
-            "protocol": "Unknown",
+            "provider": "No Auth Signals Detected",
+            "protocol": "Unknown (Passive Scan Limit)",
             "confidence": 0,
-            "evidence": []
+            "scores": {},
+            "evidence": {
+                "note": "No auth indicators found in HTTP/HTML/JS"
+            }
         }
 
     best_provider = max(scores, key=scores.get)
     confidence = min(100, scores[best_provider])
 
-    # Protocol inference (lightweight)
+    # -------------------------
+    # Protocol inference (clean + stable)
+    # -------------------------
     protocol = "Unknown"
-    if "OIDC" in scores:
+
+    keys = " ".join(scores.keys()).lower()
+
+    if "oidc" in keys or "openid" in keys:
         protocol = "OIDC"
-    elif "OAuth2" in scores:
+
+    elif "oauth" in keys:
         protocol = "OAuth2"
-    elif "SAML" in scores:
+
+    elif "saml" in keys:
         protocol = "SAML"
-    elif "Bearer Token API" in scores:
+
+    elif "bearer" in body:
         protocol = "Bearer Token"
 
+    # -------------------------
+    # Return structured result
+    # -------------------------
     return {
         "provider": best_provider,
         "protocol": protocol,
         "confidence": confidence,
-        "scores": scores
+        "scores": scores,
+        "evidence": evidence
+    }
+
+
+# =========================================================
+# LOGIN TYPE CLASSIFIER (Phase 1 add-on)
+# =========================================================
+
+def classify_login_type(body: str, headers: dict, redirect_chain: str):
+    """
+    Passive login type classification (NO active probing)
+    """
+
+    body = (body or "").lower()
+    headers_l = {k.lower(): str(v).lower() for k, v in headers.items()}
+    redirects = (redirect_chain or "").lower()
+
+    login_type = "Unknown"
+    confidence = 0
+    evidence = []
+
+    # -------------------------
+    # SSO / Federated
+    # -------------------------
+    if any(x in body for x in ["saml", "openid", "oauth", "oidc"]):
+        login_type = "SSO Login (Federated)"
+        confidence = 80
+        evidence.append("sso_keywords")
+
+    if "login.microsoftonline.com" in redirects:
+        login_type = "SSO Login (Microsoft Entra)"
+        confidence = 90
+        evidence.append("entra_redirect")
+
+    if "okta" in body or "okta" in redirects:
+        login_type = "SSO Login (Okta)"
+        confidence = 85
+        evidence.append("okta_signal")
+
+    if "auth0" in body or "auth0" in redirects:
+        login_type = "SSO Login (Auth0)"
+        confidence = 85
+        evidence.append("auth0_signal")
+
+    # -------------------------
+    # Form-based login
+    # -------------------------
+    if "password" in body and "username" in body:
+        login_type = "Form-Based Login"
+        confidence = max(confidence, 70)
+        evidence.append("username_password_fields")
+
+    if "<form" in body:
+        login_type = "Form-Based Login"
+        confidence = max(confidence, 60)
+        evidence.append("html_form_detected")
+
+    # -------------------------
+    # API authentication
+    # -------------------------
+    if "bearer" in body or "authorization" in headers_l:
+        login_type = "API Authentication"
+        confidence = max(confidence, 65)
+        evidence.append("api_auth")
+
+    # -------------------------
+    # WAF-obscured login
+    # -------------------------
+    if "incapsula" in body or "imperva" in body:
+        login_type = "WAF-Protected Login Portal"
+        confidence = 50
+        evidence.append("imperva_waf")
+
+    # -------------------------
+    # Default
+    # -------------------------
+    if confidence == 0:
+        login_type = "Generic Login Portal"
+        confidence = 20
+        evidence.append("weak_signals")
+
+    return {
+        "login_type": login_type,
+        "confidence": confidence,
+        "evidence": evidence
     }
