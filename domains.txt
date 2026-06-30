@@ -1,0 +1,19 @@
+# AuthRecon Target List
+# One URL per line
+# Comments start with #
+
+https://portal.company.com
+https://api.company.com
+https://login.company.com
+https://apps.company.com
+https://auth.company.com
+
+https://dev-portal.company.com
+https://test-api.company.com
+
+https://company.okta.com
+https://login.microsoftonline.com
+https://secure.company.com
+
+https://apim.company.com
+https://gateway.company.com
