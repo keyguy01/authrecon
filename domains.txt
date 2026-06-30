@@ -2,18 +2,26 @@
 # One URL per line
 # Comments start with #
 
-https://portal.company.com
-https://api.company.com
-https://login.company.com
-https://apps.company.com
-https://auth.company.com
-
-https://dev-portal.company.com
-https://test-api.company.com
-
-https://company.okta.com
-https://login.microsoftonline.com
-https://secure.company.com
-
-https://apim.company.com
-https://gateway.company.com
+deliveryevaluation.seaboardfoods.com
+customercare.seaboardfoods.com
+farmapi.seaboardfoods.com
+loadinfo.seaboardfoods.com
+potracker.seaboardtransport.net
+selfservice.seaboardfoods.com
+api.grainbid.com
+www.grainbid.com
+hogdelivery.seaboardfoods.com
+loadschedule.seaboardfoods.com
+quaapi.seaboardfoods.com
+quap2psuite.seaboardfoods.com
+api.seaboardfoods.com
+p2psuite.seaboardfoods.com
+salescenter.seaboardfoods.com
+uatapi.seaboardfoods.com
+uatp2psuite.seaboardfoods.com
+uatsalescenter.seaboardfoods.com
+productcaseinquiry.seaboardfoods.com
+producttrace.seaboardfoods.com
+stiapp.seaboardfoods.com
+fosmilldownload.seaboardfoods.com
+viewprofile.seaboardfoods.com
